@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../valid/images
+
+nc: 44
+names: ['aceite_bebe_mennen', 'aceite_nutrioli_400ml', 'aceite_nutrioli_850ml', 'aceite_posada', 'aceite_saborsano', 'agua_bioleve', 'agua_bioleve_6pack', 'agua_vitawa_1L', 'agua_vitawa_1_5L', 'andatti', 'arroz_laposada', 'atun_dolores_blanco', 'atun_dolores_masdos', 'atun_dolores_naranja', 'atun_dolores_normal', 'atun_mazatun', 'atun_mazatun_verde', 'azucar_laposada', 'carnation', 'cheetos', 'chicharron_bitz_intenso', 'chicharron_bitz_natural', 'chips_sal', 'detergente_azaela', 'frijol_laposada', 'frijol_lasierra', 'lalechera', 'leche_nutralatforte', 'nan_nestle_1', 'nan_nestle_2', 'nan_nestle_3', 'panales_tikytin_extragrande', 'panales_tikytin_grande', 'papel_aluminio', 'papelhigenico_azaela_6rollos', 'papelhigenico_azaela_amarillo', 'papelhigenico_azaela_azul', 'papelhigenico_kleenex_cottonelle', 'papelhigenico_petalo', 'papelhigenico_regio', 'papelhigenico_suavel', 'ruffles', 'shampoo_bebe', 'takis']
+
+roboflow:
+  workspace: hackatonfemsa
+  project: femsa_segmentation_dataset_final
+  version: 2
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/hackatonfemsa/femsa_segmentation_dataset_final/dataset/2

@@ -5,6 +5,8 @@ import logging
 import os
 from django.conf import settings
 import uuid
+from ultralytics import YOLO
+import cv2
 import json
 import shutil
 
@@ -316,6 +318,53 @@ def setup_product_images():
         # Aquí podrías copiar una imagen por defecto desde un directorio de assets
         pass
 
+def process_image_with_yolo(image_path):
+    # Cargar modelo YOLO
+    model_path = os.path.join(settings.BASE_DIR, 'posts', 'FEMSA_SEGMENTATION_DATASET_FINAL.v2i.yolov8', 'runs', 'detect', 'train3', 'weights', 'best.pt')
+    model = YOLO(model_path)
+    
+    # Realizar predicción
+    results = model.predict(image_path, conf=0.1)[0]
+    
+    # Procesar detecciones
+    detections = []
+    boxes = results.boxes
+    names = results.names
+    
+    for box, cls_id, conf in zip(boxes.xyxy.tolist(), boxes.cls.tolist(), boxes.conf.tolist()):
+        # Calcular posición relativa (porcentajes)
+        img = cv2.imread(image_path)
+        height, width = img.shape[:2]
+        
+        x1, y1, x2, y2 = box
+        x_center = ((x1 + x2) / 2) / width * 100
+        y_center = ((y1 + y2) / 2) / height * 100
+        
+        # Determinar el nivel del estante basado en la posición Y
+        shelf_level = 1  # Por defecto
+        if y_center < 25:
+            shelf_level = 4  # Nivel superior
+        elif y_center < 50:
+            shelf_level = 3
+        elif y_center < 75:
+            shelf_level = 2
+        else:
+            shelf_level = 1  # Nivel inferior
+        
+        detection = {
+            "class_id": int(cls_id),
+            "class_name": names[int(cls_id)],
+            "confidence": float(conf),
+            "position": {
+                "x": round(x_center, 2),
+                "y": round(y_center, 2),
+                "z": shelf_level
+            }
+        }
+        detections.append(detection)
+    
+    return detections
+
 def process_detections(detections):
     reference_data = get_reference_data()
     products = []
@@ -395,24 +444,50 @@ def process_detections(detections):
     return products
 
 def get_mock_products():
-    # Estado inicial sin imagen subida
+    # Mantener los datos mock existentes
+    products = [
+        {
+            "id": "prod-1",
+            "name": "Coca-Cola 600ml",
+            "typeId": "found",
+            "imageUrl": "https://images.pexels.com/photos/8754654/pexels-photo-8754654.jpeg?auto=compress&cs=tinysrgb&w=1260&h=750&dpr=1",
+            "isCorrectPosition": True,
+            "position": {"x": 1, "y": 2, "z": 1},
+            "expectedPosition": {"x": 1, "y": 2, "z": 1}
+        }
+    ]
+
+    product_types = [
+        {"id": "found", "name": "Productos Encontrados", "count": 45},
+        {"id": "misplaced", "name": "Productos Mal Ubicados", "count": 28},
+        {"id": "missing", "name": "Productos No Encontrados", "count": 32}
+    ]
+
     return {
         "metrics": {
-            "total_products": 0,
-            "found_products": 0,
-            "misplaced_products": 0,
-            "missing_products": 0
+            "total_products": len(products),
+            "found_products": sum(1 for p in products if p["typeId"] == "found"),
+            "misplaced_products": sum(1 for p in products if p["typeId"] == "misplaced"),
+            "missing_products": sum(1 for p in products if p["typeId"] == "missing")
         },
-        "compliance_counts": {
-            "found": 0,
-            "misplaced": 0,
-            "missing": 0
-        },
-        "products": [],
+        "compliance_counts": {pt["id"]: pt["count"] for pt in product_types},
+        "products": products,
         "analyzed_image_url": "",
         "detection_boxes": [],
-        "classes": [{"id": f"class_{i}", "name": f"Clase {i}", "detected": False, "position": {"x": 0, "y": 0, "z": 0}, "confidence": 0.0} for i in range(1, 45)]
+        "classes": get_mock_classes()
     }
+
+def get_mock_classes():
+    classes = []
+    for i in range(1, 45):  # 44 clases
+        classes.append({
+            "id": f"class_{i}",
+            "name": f"Clase {i}",
+            "detected": False,
+            "position": {"x": 0, "y": 0, "z": 0},
+            "confidence": 0.0
+        })
+    return classes
 
 def planograma_analisis(request):
     logger.info('GET /api/planograma/analisis/ called')
@@ -442,34 +517,53 @@ def planograma_analizar_imagen(request):
             for chunk in image.chunks():
                 destination.write(chunk)
         
-        logger.info(f'Imagen guardada en: {image_path}')
+        try:
+            # Procesar la imagen con YOLO
+            detections = process_image_with_yolo(image_path)
+            
+            # Convertir detecciones al formato esperado por el frontend
+            products = []
+            for detection in detections:
+                product = {
+                    "id": f"prod-{detection['class_id']}",
+                    "name": detection['class_name'],
+                    "typeId": "found",  # Por defecto, todos son encontrados
+                    "imageUrl": f"/media/products/{detection['class_name'].lower().replace(' ', '-')}.jpg",
+                    "isCorrectPosition": True,  # Por defecto
+                    "position": detection['position'],
+                    "expectedPosition": detection['position'],  # Por ahora, asumimos que la posición es correcta
+                    "confidence": detection['confidence']
+                }
+                products.append(product)
+            
+            # Calcular métricas
+            total_products = len(products)
+            found_products = len(products)
+            
+            response_data = {
+                "metrics": {
+                    "total_products": total_products,
+                    "found_products": found_products,
+                    "misplaced_products": 0,
+                    "missing_products": 0
+                },
+                "compliance_counts": {
+                    "found": found_products,
+                    "misplaced": 0,
+                    "missing": 0
+                },
+                "products": products,
+                "analyzed_image_url": f"/media/uploads/{image_name}",
+                "detection_boxes": detections,
+                "classes": get_mock_classes()
+            }
+            
+            return JsonResponse(response_data)
+            
+        except Exception as e:
+            logger.error(f"Error procesando imagen: {str(e)}")
+            return JsonResponse({'error': 'Error procesando la imagen'}, status=500)
         
-        # Obtener detecciones y procesar datos
-        detections = get_mock_detections()
-        products = process_detections(detections)
-        
-        product_types = [
-            {"id": "found", "name": "Productos Encontrados", "count": len([p for p in products if p["typeId"] == "found"])},
-            {"id": "misplaced", "name": "Productos Mal Ubicados", "count": len([p for p in products if p["typeId"] == "misplaced"])},
-            {"id": "missing", "name": "Productos No Encontrados", "count": len([p for p in products if p["typeId"] == "missing"])}
-        ]
-        
-        response_data = {
-            "metrics": {
-                "total_products": len(products),
-                "found_products": len([p for p in products if p["typeId"] == "found"]),
-                "misplaced_products": len([p for p in products if p["typeId"] == "misplaced"]),
-                "missing_products": len([p for p in products if p["typeId"] == "missing"])
-            },
-            "compliance_counts": {pt["id"]: pt["count"] for pt in product_types},
-            "products": products,
-            "analyzed_image_url": f'/media/uploads/{image_name}',
-            "detection_boxes": detections,
-            "classes": [{"id": f"class_{i}", "name": f"Clase {i}", "detected": False, "position": {"x": 0, "y": 0, "z": 0}, "confidence": 0.0} for i in range(1, 45)]
-        }
-        
-        return JsonResponse(response_data)
-    
     return JsonResponse({'error': 'Método no permitido'}, status=405)
 
 # Inicializar las imágenes de productos al cargar el módulo
