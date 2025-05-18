@@ -319,52 +319,139 @@ def setup_product_images():
         pass
 
 def process_image_with_yolo(image_path):
-    # Cargar modelo YOLO
-    model_path = os.path.join(settings.BASE_DIR, 'posts', 'FEMSA_SEGMENTATION_DATASET_FINAL.v2i.yolov8', 'runs', 'detect', 'train3', 'weights', 'best.pt')
-    model = YOLO(model_path)
-    
-    # Realizar predicción
-    results = model.predict(image_path, conf=0.1)[0]
-    
-    # Procesar detecciones
-    detections = []
-    boxes = results.boxes
-    names = results.names
-    
-    for box, cls_id, conf in zip(boxes.xyxy.tolist(), boxes.cls.tolist(), boxes.conf.tolist()):
-        # Calcular posición relativa (porcentajes)
-        img = cv2.imread(image_path)
-        height, width = img.shape[:2]
+    try:
+        # Cargar el modelo YOLO
+        model_path = os.path.join(
+            settings.BASE_DIR, 'posts', 'FEMSA_SEGMENTATION_DATASET_FINAL.v2i.yolov8',
+            'runs', 'detect', 'train3', 'weights', 'best.pt'
+        )
+        model = YOLO(model_path)
+
+        # Realizar predicción con umbral de confianza
+        results = model.predict(image_path, conf=0.25)[0]
         
-        x1, y1, x2, y2 = box
-        x_center = ((x1 + x2) / 2) / width * 100
-        y_center = ((y1 + y2) / 2) / height * 100
+        # Extraer detecciones
+        detections = []
         
-        # Determinar el nivel del estante basado en la posición Y
-        shelf_level = 1  # Por defecto
-        if y_center < 25:
-            shelf_level = 4  # Nivel superior
-        elif y_center < 50:
-            shelf_level = 3
-        elif y_center < 75:
-            shelf_level = 2
-        else:
-            shelf_level = 1  # Nivel inferior
+        # Obtener las detecciones directamente del resultado
+        for i in range(len(results.boxes)):
+            box = results.boxes.xyxy[i].tolist()
+            cls_id = int(results.boxes.cls[i].item())
+            conf = float(results.boxes.conf[i].item())
+            
+            detections.append({
+                'class_id': cls_id,
+                'class_name': model.names[cls_id],
+                'confidence': conf,
+                'box': {
+                    'x1': float(box[0]),
+                    'y1': float(box[1]),
+                    'x2': float(box[2]),
+                    'y2': float(box[3])
+                }
+            })
+
+        # Procesar detecciones para obtener productos
+        products = []
+        reference_data = get_reference_data()
+        found_classes = set()
+
+        for detection in detections:
+            class_name = detection['class_name']
+            if class_name not in reference_data:
+                continue
+                
+            ref = reference_data[class_name]
+            
+            # Calcular posición relativa
+            img = cv2.imread(image_path)
+            height, width = img.shape[:2]
+            
+            x_center = (detection['box']['x1'] + detection['box']['x2']) / 2
+            y_center = (detection['box']['y1'] + detection['box']['y2']) / 2
+            
+            # Determinar el nivel (shelf) basado en la coordenada y
+            if y_center < height * 0.25:
+                detected_shelf = 4  # Nivel superior
+            elif y_center < height * 0.5:
+                detected_shelf = 3
+            elif y_center < height * 0.75:
+                detected_shelf = 2
+            else:
+                detected_shelf = 1  # Nivel inferior
+                
+            # Determinar la posición horizontal
+            detected_position = int((x_center / width) * 5) + 1  # Dividir en 5 secciones
+            
+            # Verificar si está en la posición correcta
+            is_correct_position = (detected_shelf == ref['shelf'] and 
+                                 detected_position == ref['position'])
+            
+            product = {
+                "id": f"prod-{detection['class_id']}",
+                "name": ref['name'],
+                "barcode": ref['barcode'],
+                "typeId": "found" if is_correct_position else "misplaced",
+                "imageUrl": get_product_image_path(class_name),
+                "isCorrectPosition": is_correct_position,
+                "position": {
+                    "x": detected_position,
+                    "y": detected_shelf,
+                    "z": 1
+                },
+                "expectedPosition": {
+                    "x": ref['position'],
+                    "y": ref['shelf'],
+                    "z": 1
+                },
+                "confidence": detection['confidence'],
+                "dimensions": ref['dimensions']
+            }
+            products.append(product)
+            found_classes.add(detection['class_id'])
         
-        detection = {
-            "class_id": int(cls_id),
-            "class_name": names[int(cls_id)],
-            "confidence": float(conf),
-            "position": {
-                "x": round(x_center, 2),
-                "y": round(y_center, 2),
-                "z": shelf_level
+        # Generar productos faltantes (missing)
+        for class_name, ref in reference_data.items():
+            if ref['id'] not in found_classes:
+                product = {
+                    "id": f"prod-{ref['id']}",
+                    "name": ref['name'],
+                    "barcode": ref['barcode'],
+                    "typeId": "missing",
+                    "imageUrl": get_product_image_path(class_name),
+                    "isCorrectPosition": False,
+                    "position": {"x": 0, "y": 0, "z": 0},
+                    "expectedPosition": {
+                        "x": ref['position'],
+                        "y": ref['shelf'],
+                        "z": 1
+                    },
+                    "dimensions": ref['dimensions']
+                }
+                products.append(product)
+
+        # Calcular métricas
+        metrics = {
+            "total_products": len(products),
+            "found_products": sum(1 for p in products if p["typeId"] == "found"),
+            "misplaced_products": sum(1 for p in products if p["typeId"] == "misplaced"),
+            "missing_products": sum(1 for p in products if p["typeId"] == "missing")
+        }
+
+        return {
+            'products': products,
+            'metrics': metrics,
+            'compliance_counts': {
+                'found': metrics['found_products'],
+                'misplaced': metrics['misplaced_products'],
+                'missing': metrics['missing_products']
             }
         }
-        detections.append(detection)
-    
-    return detections
 
+    except Exception as e:
+        logger.error(f"Error en process_image_with_yolo: {str(e)}")
+        raise
+    
 def process_detections(detections):
     reference_data = get_reference_data()
     products = []
@@ -519,43 +606,13 @@ def planograma_analizar_imagen(request):
         
         try:
             # Procesar la imagen con YOLO
-            detections = process_image_with_yolo(image_path)
-            
-            # Convertir detecciones al formato esperado por el frontend
-            products = []
-            for detection in detections:
-                product = {
-                    "id": f"prod-{detection['class_id']}",
-                    "name": detection['class_name'],
-                    "typeId": "found",  # Por defecto, todos son encontrados
-                    "imageUrl": f"/media/products/{detection['class_name'].lower().replace(' ', '-')}.jpg",
-                    "isCorrectPosition": True,  # Por defecto
-                    "position": detection['position'],
-                    "expectedPosition": detection['position'],  # Por ahora, asumimos que la posición es correcta
-                    "confidence": detection['confidence']
-                }
-                products.append(product)
-            
-            # Calcular métricas
-            total_products = len(products)
-            found_products = len(products)
+            results = process_image_with_yolo(image_path)
             
             response_data = {
-                "metrics": {
-                    "total_products": total_products,
-                    "found_products": found_products,
-                    "misplaced_products": 0,
-                    "missing_products": 0
-                },
-                "compliance_counts": {
-                    "found": found_products,
-                    "misplaced": 0,
-                    "missing": 0
-                },
-                "products": products,
-                "analyzed_image_url": f"/media/uploads/{image_name}",
-                "detection_boxes": detections,
-                "classes": get_mock_classes()
+                "metrics": results["metrics"],
+                "compliance_counts": results["compliance_counts"],
+                "products": results["products"],
+                "analyzed_image_url": f"/media/uploads/{image_name}"
             }
             
             return JsonResponse(response_data)
