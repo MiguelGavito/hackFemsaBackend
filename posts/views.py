@@ -430,7 +430,7 @@ def process_detections(detections):
                 "barcode": ref['barcode'],
                 "typeId": "missing",
                 "imageUrl": get_product_image_path(class_name),
-                "isCorrectPosition": False,
+            "isCorrectPosition": False,
                 "position": {"x": 0, "y": 0, "z": 0},
                 "expectedPosition": {
                     "x": ref['position'],
